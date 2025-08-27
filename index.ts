@@ -3,9 +3,9 @@ import { Database, Statement } from "bun:sqlite";
 import { error } from "console";
 
 const whitelist_text = await Bun.file("whitelist.txt").text();
-const Whitelisted_Item_Ids: Array<number> = whitelist_text
+const Whitelisted_Item_Ids: number[] = whitelist_text
 	.split(/\r?\n/)
-	.map(line => line.trim())
+	.map(line => line.split("#")[0]!.trim())
 	.filter(line => line && !line.startsWith("#"))
 	.map(Number);
 
@@ -134,8 +134,9 @@ const InsertManyTransaction = db.transaction((entries: {
 		worldID: number,
 		hash: string
 	}[]) => {
+		let inserted = 0;
 		for (const e of entries) {
-			InsertSaleEntryStatement.run(
+			const result = InsertSaleEntryStatement.run(
 				e.item_id,
 				e.hq ? 1 : 0,
 				e.pricePerUnit,
@@ -144,8 +145,9 @@ const InsertManyTransaction = db.transaction((entries: {
 				e.worldID,
 				e.hash
 			);
+			inserted += result.changes;
 		}
-		return entries.length;
+		return inserted;
 });
 
 // --- Logic Helpers ---
@@ -158,7 +160,7 @@ async function findItemsNeedingUpdate(whitelist: number[]): Promise<number[]> {
 	let itemsToUpdate: number[] = [];
 
 	for (let item_id of whitelist) {
-		const entry = singleHistoryFetch.items[item_id] as ItemHistory | undefined;
+		const entry = singleHistoryFetch.items[item_id];
 		const lastUploadTime: number = entry?.lastUploadTime || 0;
 
 		const db_result = LastUploadTimeStatement.run(item_id, lastUploadTime);
