@@ -1,6 +1,5 @@
-import { serve } from "bun";
 import type { Serve } from "bun";
-import { Database } from "bun:sqlite";
+import { Database, Statement } from "bun:sqlite";
 import { error } from "console";
 
 const whitelist_text = await Bun.file("whitelist.txt").text();
@@ -29,7 +28,7 @@ if(ENV === "PROD"){
 	}
 }
 
-//const server = serve(server_options);
+//const server = bun.serve(server_options);
 //console.log(`Running as ${ENV} and Listening on localhost:${server.port}`);
 
 //Fetches json from url and parses/returns a json object
@@ -106,59 +105,27 @@ function truncatedMD5(input: string, length: number = 12): string {
 function saleHash(item_id: number, timestamp: number, buyer_name: string, total_price: number): string {
   return truncatedMD5(`${item_id}|${timestamp}|${buyer_name}|${total_price}`);
 }
-
-async function checkForUpdatedMBData(){
-	//Checks if itemstamp is old for the given item id, then update with new
-	const checkAndUpdateLastUploadTime = db.query(`
-		INSERT INTO last_updated (item_id, timestamp)
-		VALUES (?, ?)
-		ON CONFLICT(item_id) DO UPDATE
-			SET timestamp = excluded.timestamp
-			WHERE excluded.timestamp > last_updated.timestamp
-	`);
-	
-	//Check if a single latest entry needs an update
-	const singleHistoryFetch = await fetchSaleHistory({
-		item_ids: Whitelisted_Item_Ids,
-		entries: 1
-	});
-
-	let item_ids_to_update: Array<number> = [];
-	for(let item_id of Whitelisted_Item_Ids){
-		let item_entry = singleHistoryFetch.items[item_id];
-		let lastUploadTime:number = item_entry?.lastUploadTime || 0;
-
-		let db_result = checkAndUpdateLastUploadTime.run(item_id, lastUploadTime);
-		let has_update:boolean = db_result.changes > 0;
-
-		console.log(item_id, new Date(lastUploadTime).toISOString(), has_update);
-
-		if(has_update){
-			item_ids_to_update.push(item_id);
-		}
-
-	}
-
-	//With all the new time stamps for the new items, update all entries by fetching the max history
-	const multiHistoryFetch = await fetchSaleHistory({
-		item_ids: item_ids_to_update,
-		entries: 99999
-	});
-
-	const insertSaleEntryStatment = db.prepare(`
-		INSERT INTO sale_history (
-			item_id,
-			hq,
-			price_per_unit,
-			quantity,
-			timestamp,
-			world_id,
-			hash
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(hash) DO NOTHING
-	`);
-
-	const insertMany = db.transaction((entries: {
+// --- DB Helpers ---
+const LastUploadTimeStatement: Statement = db.query(`
+	INSERT INTO last_updated (item_id, timestamp)
+	VALUES (?, ?)
+	ON CONFLICT(item_id) DO UPDATE
+		SET timestamp = excluded.timestamp
+		WHERE excluded.timestamp > last_updated.timestamp
+`);
+const InsertSaleEntryStatement: Statement = db.prepare(`
+	INSERT INTO sale_history (
+		item_id,
+		hq,
+		price_per_unit,
+		quantity,
+		timestamp,
+		world_id,
+		hash
+	) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(hash) DO NOTHING
+`);
+const InsertManyTransaction = db.transaction((entries: {
 		item_id: number,
 		hq: boolean,
 		pricePerUnit: number,
@@ -167,8 +134,8 @@ async function checkForUpdatedMBData(){
 		worldID: number,
 		hash: string
 	}[]) => {
-		for(const e of entries){
-			insertSaleEntryStatment.run(
+		for (const e of entries) {
+			InsertSaleEntryStatement.run(
 				e.item_id,
 				e.hq ? 1 : 0,
 				e.pricePerUnit,
@@ -179,29 +146,78 @@ async function checkForUpdatedMBData(){
 			);
 		}
 		return entries.length;
+});
+
+// --- Logic Helpers ---
+async function findItemsNeedingUpdate(whitelist: number[]): Promise<number[]> {
+	const singleHistoryFetch = await fetchSaleHistory({
+		item_ids: whitelist,
+		entries: 1
 	});
 
-	for(let item_id of item_ids_to_update){
-		let item_entry = multiHistoryFetch.items[item_id];
+	let itemsToUpdate: number[] = [];
 
-		if (!item_entry) throw new Error(`No entry found for item ${item_id}`);
+	for (let item_id of whitelist) {
+		const entry = singleHistoryFetch.items[item_id] as ItemHistory | undefined;
+		const lastUploadTime: number = entry?.lastUploadTime || 0;
 
-		let sale_entries: Array<SaleHistoryEntry> = item_entry.entries;
+		const db_result = LastUploadTimeStatement.run(item_id, lastUploadTime);
+		const hasUpdate = db_result.changes > 0;
 
-		let formatted_entries = sale_entries.map(sale => ({
-			item_id,
-			hq: sale.hq,
-			pricePerUnit: sale.pricePerUnit,
-			quantity: sale.quantity,
-			timestamp: sale.timestamp,
-			worldID: sale.worldID,
-			hash: saleHash(item_id, sale.timestamp, sale.buyerName, sale.pricePerUnit * sale.quantity)
-		}));
+		console.log(item_id, new Date(lastUploadTime).toISOString(), hasUpdate);
 
-		let transaction_result = insertMany(formatted_entries);
-
-		console.log(transaction_result)
+		if (hasUpdate) {
+			itemsToUpdate.push(item_id);
+		}
 	}
+
+	return itemsToUpdate;
 }
 
-await checkForUpdatedMBData();
+function formatSaleEntries(item_id: number, saleEntries: SaleHistoryEntry[]) {
+	return saleEntries.map(sale => ({
+		item_id,
+		hq: sale.hq,
+		pricePerUnit: sale.pricePerUnit,
+		quantity: sale.quantity,
+		timestamp: sale.timestamp,
+		worldID: sale.worldID,
+		hash: saleHash(
+			item_id,
+			sale.timestamp,
+			sale.buyerName,
+			sale.pricePerUnit * sale.quantity
+		)
+	}));
+}
+
+//--- Main ---
+async function checkAndUpdateMBData(){
+	//Check for which items to update by getting only 1 query from history
+	const itemsToUpdate: number[] = await findItemsNeedingUpdate(Whitelisted_Item_Ids);
+
+	if (itemsToUpdate.length === 0) {
+		console.log("No updates needed.");
+		return;
+	}
+
+	//Get full history of items that need updating, and insert them into sale_history table
+	const multiHistoryFetch = await fetchSaleHistory({
+		item_ids: itemsToUpdate,
+		entries: 99999
+	});
+
+	let total_insertions: number = 0;
+	for (let item_id of itemsToUpdate) {
+		const itemEntry = multiHistoryFetch.items[item_id];
+		if (!itemEntry) throw new Error(`No entry found for item ${item_id}`);
+
+		const formattedEntries = formatSaleEntries(item_id, itemEntry.entries);
+		const insertedCount = InsertManyTransaction(formattedEntries);
+
+		console.log(`Inserted ${insertedCount} entries for item ${item_id}`);
+		total_insertions += insertedCount;
+	}
+	console.log(`${total_insertions} total entries added to sale history database`);
+}
+await checkAndUpdateMBData();

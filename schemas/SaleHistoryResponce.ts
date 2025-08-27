@@ -32,29 +32,17 @@ export const SaleHistoryResponseSchema = z.union([
     z.object({
         itemIDs: z.array(z.number()),
         items: z.record(z.string(),ItemEntrySchema),
-    }),
+    }).transform((data) => ({
+        itemIDs: data.itemIDs,
+        items: data.items,
+    })),
 
     //Single item response
-    z.object({
-        itemIDs: z.array(z.number()).optional(),
-        items: ItemEntrySchema
-    })
-]).transform((data) => {
-    if("itemID" in data.items){ //if single entry transform
-        const entry = data.items;
-        return {
-            itemIDs: [entry.itemID],
-            items: {[String(entry.itemID)]: entry},
-        }
-    }
-
-    return {
-        itemIDs: data.itemIDs,
-        items: Object.fromEntries(
-            Object.entries(data.items).map(([k, v]) => [String(k), v])
-        ),
-    }
-});
+    ItemEntrySchema.transform((entry) => ({
+        itemIDs: [entry.itemID],
+        items: { [String(entry.itemID)]: entry },
+    }))
+]);
 
 /* const SingleItemSaleHistoryResponce = ItemEntrySchema;
 
