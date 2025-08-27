@@ -2,7 +2,7 @@ import type { Serve } from "bun";
 import { Database, Statement } from "bun:sqlite";
 import { error } from "console";
 
-const whitelist_text = await Bun.file("whitelist.txt").text();
+const whitelist_text = await Bun.file("whitelist.ini").text();
 const Whitelisted_Item_Ids: number[] = whitelist_text
 	.split(/\r?\n/)
 	.map(line => line.split("#")[0]!.trim())
