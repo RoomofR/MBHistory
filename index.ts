@@ -54,25 +54,7 @@ type SalesOptions = {
 	entries?: number, //0-99999 default=1800
 }
 
-/* type ItemEntry = {
-	itemID: number,
-	lastUploadTime: number,
-	entries: any,
-	regionName: string,
-	stackSizeHistogram: any,
-	stackSizeHistogramNQ: any,
-	stackSizeHistogramHQ: any,
-	regularSaleVelocity: number,
-	nqSaleVelocity: number,
-	hqSaleVelocity: string,
-}
-
-type SaleHistoryResponce = {
-	itemIDs: Array<number>,
-	items: Record<string, ItemEntry>
-}; */
-
-import {SaleHistoryResponseSchema, type SaleHistoryResponse} from "./schemas/SaleHistoryResponce";
+import {SaleHistoryResponseSchema, type SaleHistoryResponse, type ItemEntry, type SaleHistoryEntry} from "./schemas/SaleHistoryResponce";
 
 async function fetchSaleHistory({
 	item_ids = [],
@@ -90,6 +72,7 @@ async function fetchSaleHistory({
 
 const db = new Database("marketboard_data.sqlite", { create: true });
 
+//Item last updated Table
 db.exec(`
 	CREATE TABLE IF NOT EXISTS last_updated (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,12 +81,33 @@ db.exec(`
 	);
 `);
 
+//Item Sale History Table
+db.exec(`
+	CREATE TABLE IF NOT EXISTS sale_history (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		item_id INTEGER NOT NULL,
+		hq BOOLEAN NOT NULL,
+		price_per_unit INTEGER NOT NULL,
+		quantity INTEGER NOT NULL,
+		timestamp INTEGER NOT NULL,
+		world_id INTEGER NOT NULL,
+		hash TEXT NOT NULL UNIQUE,
+		aggregated BOOLEAN NOT NULL DEFAULT 0
+	);
+`);
+
+function truncatedMD5(input: string, length: number = 12): string {
+	const hasher = new Bun.CryptoHasher("md5");
+	hasher.update(input);
+	const hex = Buffer.from(hasher.digest()).toString("hex");
+	return hex.slice(0, length);
+}
+
+function saleHash(item_id: number, timestamp: number, buyer_name: string, total_price: number): string {
+  return truncatedMD5(`${item_id}|${timestamp}|${buyer_name}|${total_price}`);
+}
+
 async function checkForUpdatedMBData(){
-	const singleHistoryFetch = await fetchSaleHistory({
-		item_ids: Whitelisted_Item_Ids,
-		entries: 1
-	});
-	
 	//Checks if itemstamp is old for the given item id, then update with new
 	const checkAndUpdateLastUploadTime = db.query(`
 		INSERT INTO last_updated (item_id, timestamp)
@@ -112,7 +116,14 @@ async function checkForUpdatedMBData(){
 			SET timestamp = excluded.timestamp
 			WHERE excluded.timestamp > last_updated.timestamp
 	`);
+	
+	//Check if a single latest entry needs an update
+	const singleHistoryFetch = await fetchSaleHistory({
+		item_ids: Whitelisted_Item_Ids,
+		entries: 1
+	});
 
+	let item_ids_to_update: Array<number> = [];
 	for(let item_id of Whitelisted_Item_Ids){
 		let item_entry = singleHistoryFetch.items[item_id];
 		let lastUploadTime:number = item_entry?.lastUploadTime || 0;
@@ -121,32 +132,76 @@ async function checkForUpdatedMBData(){
 		let has_update:boolean = db_result.changes > 0;
 
 		console.log(item_id, new Date(lastUploadTime).toISOString(), has_update);
+
+		if(has_update){
+			item_ids_to_update.push(item_id);
+		}
+
+	}
+
+	//With all the new time stamps for the new items, update all entries by fetching the max history
+	const multiHistoryFetch = await fetchSaleHistory({
+		item_ids: item_ids_to_update,
+		entries: 99999
+	});
+
+	const insertSaleEntryStatment = db.prepare(`
+		INSERT INTO sale_history (
+			item_id,
+			hq,
+			price_per_unit,
+			quantity,
+			timestamp,
+			world_id,
+			hash
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(hash) DO NOTHING
+	`);
+
+	const insertMany = db.transaction((entries: {
+		item_id: number,
+		hq: boolean,
+		pricePerUnit: number,
+		quantity: number,
+		timestamp: number,
+		worldID: number,
+		hash: string
+	}[]) => {
+		for(const e of entries){
+			insertSaleEntryStatment.run(
+				e.item_id,
+				e.hq ? 1 : 0,
+				e.pricePerUnit,
+				e.quantity,
+				e.timestamp,
+				e.worldID,
+				e.hash
+			);
+		}
+		return entries.length;
+	});
+
+	for(let item_id of item_ids_to_update){
+		let item_entry = multiHistoryFetch.items[item_id];
+
+		if (!item_entry) throw new Error(`No entry found for item ${item_id}`);
+
+		let sale_entries: Array<SaleHistoryEntry> = item_entry.entries;
+
+		let formatted_entries = sale_entries.map(sale => ({
+			item_id,
+			hq: sale.hq,
+			pricePerUnit: sale.pricePerUnit,
+			quantity: sale.quantity,
+			timestamp: sale.timestamp,
+			worldID: sale.worldID,
+			hash: saleHash(item_id, sale.timestamp, sale.buyerName, sale.pricePerUnit * sale.quantity)
+		}));
+
+		let transaction_result = insertMany(formatted_entries);
+
+		console.log(transaction_result)
 	}
 }
 
 await checkForUpdatedMBData();
-
-//console.log( await fetchJSON(`https://universalis.app/api/v2/history/europe/8?entriesToReturn=1&minSalePrice=0&maxSalePrice=2147483647`))
-/* fetchSaleHistory({
-	item_ids: Whitelisted_Item_Ids,
-	entries: 1
-}) */
-
-/*
-
-db.exec(`
-	CREATE TABLE IF NOT EXISTS users (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL,
-		email TEXT UNIQUE NOT NULL
-	);
-`);
-
-const insert = db.prepare("INSERT INTO users (name, email) VALUES (?, ?)");
-
-insert.run("Alice", "alice@example.com");
-insert.run("Bob", "bob@example.com");
-
-const query = db.query("SELECT * FROM users");
-const users = query.all();
-console.table(users);*/
