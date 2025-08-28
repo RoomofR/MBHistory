@@ -12,7 +12,7 @@ export const SaleHistoryEntrySchema = z.object({
   worldID: z.number(),
 });
 
-// entries of each item in the main history responce
+// entries of each item in the main history response
 export const ItemEntrySchema = z.object({
     itemID: z.number(),
     lastUploadTime: z.number(),
@@ -26,7 +26,7 @@ export const ItemEntrySchema = z.object({
     hqSaleVelocity: z.number(),
 });
 
-// Main responce of sale history query from univeralis api
+// Main response of sale history query from universalis api
 export const SaleHistoryResponseSchema = z.union([
     //Multiple items response
     z.object({
@@ -43,18 +43,6 @@ export const SaleHistoryResponseSchema = z.union([
         items: { [String(entry.itemID)]: entry },
     }))
 ]);
-
-/* const SingleItemSaleHistoryResponce = ItemEntrySchema;
-
-const MultiItemSaleHistoryResponse= z.object({
-    itemIDs: z.array(z.number()),
-    items: z.record(z.string(),ItemEntrySchema),
-});
-
-export const UnionSaleHistoryResponseSchema = z.union([
-    SingleItemSaleHistoryResponce,
-    MultiItemSaleHistoryResponse
-]) */
 
 // Infer TS types directly from schema
 export type ItemEntry = z.infer<typeof ItemEntrySchema>;

@@ -53,7 +53,7 @@ type SalesOptions = {
 	entries?: number, //0-99999 default=1800
 }
 
-import {SaleHistoryResponseSchema, type SaleHistoryResponse, type ItemEntry, type SaleHistoryEntry} from "./schemas/SaleHistoryResponce";
+import {SaleHistoryResponseSchema, type SaleHistoryResponse, type ItemEntry, type SaleHistoryEntry} from "./schemas/SaleHistoryResponse";
 
 async function fetchSaleHistory({
 	item_ids = [],
@@ -222,4 +222,4 @@ async function checkAndUpdateMBData(){
 	}
 	console.log(`${total_insertions} total entries added to sale history database`);
 }
-await checkAndUpdateMBData();
+//await checkAndUpdateMBData();
